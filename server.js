@@ -43,7 +43,7 @@ const PAYDUNYA_HEADERS = {
 
 // URL publique de TON serveur une fois déployé (ex: https://cvpro221-api.onrender.com)
 const SERVER_PUBLIC_URL = process.env.SERVER_PUBLIC_URL || `http://localhost:${PORT}`;
-// URL où sont hébergées tes pages HTML (Netlify)
+// URL où sont hébergées tes pages HTML (Netlify, GitHub Pages...)
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5500';
 
 const DB_PATH = path.join(__dirname, 'payments.json');
@@ -68,7 +68,7 @@ app.post('/api/create-payment', async (req, res) => {
   try {
     const invoiceData = {
       invoice: {
-        total_amount: 500,
+        total_amount: 500, // montant en FCFA
         description: 'Accès CVpro221 — génération de CV professionnel',
         customer: { name, email, phone },
       },
@@ -78,10 +78,12 @@ app.post('/api/create-payment', async (req, res) => {
       },
       actions: {
         cancel_url: `${FRONTEND_URL}/CVpro221_Inscription.html?payment=cancelled`,
-        return_url: `${FRONTEND_URL}/Generateur_CV_Prototype.html`,
+        return_url: `${FRONTEND_URL}/Generateur_CV_Prototype.html`, // PayDunya y ajoute ?token=...
         callback_url: `${SERVER_PUBLIC_URL}/api/callback`,
       },
-      channels: ['wave-senegal', 'orange-money-senegal', 'card'],
+      // Identifiants exacts reconnus par PayDunya pour le Sénégal (le paiement carte
+      // se configure séparément dans les paramètres de ton compte PayDunya, pas ici).
+      channels: ['orange-money-senegal', 'wave-senegal'],
     };
 
     const response = await axios.post(
@@ -91,6 +93,7 @@ app.post('/api/create-payment', async (req, res) => {
     );
 
     if (response.data.response_code === '00') {
+      // On enregistre la facture comme "en attente" en base
       const db = readDB();
       db[response.data.token] = {
         status: 'pending',
@@ -100,7 +103,7 @@ app.post('/api/create-payment', async (req, res) => {
       writeDB(db);
 
       return res.json({
-        payment_url: response.data.response_text,
+        payment_url: response.data.response_text, // lien vers la page de paiement PayDunya
         token: response.data.token,
       });
     }
@@ -119,7 +122,7 @@ app.post('/api/callback', (req, res) => {
   try {
     const data = req.body.data ? JSON.parse(req.body.data) : req.body;
     const token = data.invoice?.token;
-    const status = data.status;
+    const status = data.status; // "completed" | "cancelled" | "failed"
 
     if (token) {
       const db = readDB();
@@ -131,7 +134,7 @@ app.post('/api/callback', (req, res) => {
       console.log(`Paiement ${token} -> statut : ${status}`);
     }
 
-    res.sendStatus(200);
+    res.sendStatus(200); // PayDunya attend juste un 200 OK
   } catch (err) {
     console.error('Erreur callback:', err.message);
     res.sendStatus(500);
@@ -139,16 +142,18 @@ app.post('/api/callback', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// 3) Vérifier si un token a été payé
+// 3) Vérifier si un token a été payé (utilisé par le générateur de CV avant de débloquer l'accès)
 // ---------------------------------------------------------------------------
 app.get('/api/verify/:token', async (req, res) => {
   const { token } = req.params;
   const db = readDB();
 
+  // Si on l'a déjà en base avec un statut connu, on répond directement
   if (db[token] && db[token].status === 'completed') {
     return res.json({ paid: true });
   }
 
+  // Sinon on interroge directement PayDunya pour être sûr (au cas où l'IPN n'est pas encore arrivée)
   try {
     const response = await axios.get(
       `${BASE_URL}/checkout-invoice/confirm/${token}`,
